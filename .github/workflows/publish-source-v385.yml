@@ -1,0 +1,51 @@
+name: Publish readable Android source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'source-archive/v3.8.5/**'
+      - '.github/workflows/publish-source-v385.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Verify archive and unpack the source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat source-archive/v3.8.5/part-*.b64 | base64 -d > /tmp/app-source.zip
+          echo 'f3c042335a93c046e18d72d69a8ae6395c7e533c90d3214bf38501dac58088b1  /tmp/app-source.zip' | sha256sum -c -
+          mkdir -p /tmp/public-android
+          unzip -q /tmp/app-source.zip -d /tmp/public-android
+          # Never publish any keystore, local secret, or environment file.
+          find /tmp/public-android -type f \( -name '*.keystore' -o -name '*.jks' -o -name '*.p12' -o -name '*.pfx' -o -name '.env' -o -name '*.key' -o -name 'google-services.json' \) -delete
+          test -f /tmp/public-android/src/CommercialOpportunitiesScreen.tsx
+          test -f /tmp/public-android/android/app/build.gradle
+      - name: Publish source in a navigable dedicated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Bazar Business CI"
+          git config user.email "bazar-ci@users.noreply.github.com"
+          git switch --orphan source/v3.8.5
+          git rm -rf . >/dev/null
+          mkdir -p app
+          cp -a /tmp/public-android/. app/
+          cat > README.md <<'EOT'
+          # Android source 3.8.5
+          Browsable, public source for Bazar Business. No production signing keys, bot tokens, or private server configuration are included.
+          Package: ir.picamo.bazar (versionCode 385).
+          For a reproducible build, use the verified source ZIP and GitHub Actions workflow on main.
+          EOT
+          git add app README.md
+          git commit -m "source(bazar): publish browseable Android 3.8.5 source (no private credentials)"
+          git push origin HEAD:refs/heads/source/v3.8.5
