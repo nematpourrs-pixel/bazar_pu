@@ -1,0 +1,50 @@
+name: Validate Bazar Business 3.8.6 market watch
+on:
+  push:
+    branches: ['source/v3.8.6-market-watch']
+    paths: ['app/**', '.github/workflows/build-market-v386.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Android 36 toolchain
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+      - name: TypeScript and tests
+        working-directory: app
+        run: |
+          npm ci --legacy-peer-deps
+          npx tsc --noEmit
+          npx jest --runInBand
+      - name: Compile unsigned release for validation
+        working-directory: app/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a --no-daemon --max-workers=2
+      - name: Package unsigned artifact, NOT publishable
+        run: |
+          mkdir -p dist
+          cp app/android/app/build/outputs/apk/release/*unsigned.apk dist/BazarBusiness-v3.8.6-UNSIGNED.apk
+          echo 'Validation ONLY. Must be signed with original production keystore outside public repository.' > dist/README.txt
+          sha256sum dist/*.apk > dist/sha256sums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bazar-business-v3.8.6-unsigned-validation
+          path: dist/
+          retention-days: 7
