@@ -1,0 +1,103 @@
+name: Build Bazar Business 3.8.5
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'source-archive/v3.8.5/**'
+      - '.github/workflows/build-android-v385.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore and verify public Android source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat source-archive/v3.8.5/part-*.b64 | base64 -d > /tmp/bazar-business-3.8.5-source.zip
+          echo 'f3c042335a93c046e18d72d69a8ae6395c7e533c90d3214bf38501dac58088b1  /tmp/bazar-business-3.8.5-source.zip' | sha256sum -c -
+          unzip -q /tmp/bazar-business-3.8.5-source.zip -d "$GITHUB_WORKSPACE/project"
+          grep -Eq 'versionCode[[:space:]]+385' project/android/app/build.gradle
+          grep -Eq 'versionName[[:space:]]+"3\.8\.5"' project/android/app/build.gradle
+          grep -Eq 'applicationId[[:space:]]+"ir\.picamo\.bazar"' project/android/app/build.gradle
+          test -s project/src/CommercialOpportunitiesScreen.tsx
+          test -s project/src/MarketplaceChat.tsx
+          test -s project/package-lock.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: project/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Install Android 36 build environment
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+      - name: Install dependencies and run tests
+        working-directory: project
+        shell: bash
+        run: |
+          npm ci --legacy-peer-deps
+          npx tsc --noEmit
+          npx jest --runInBand
+      - name: Compile unsigned release APK
+        working-directory: project/android
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a --no-daemon --max-workers=2 --stacktrace
+      - name: Align, test-sign and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          unsigned="$(find project/android/app/build/outputs/apk/release -type f -name '*unsigned.apk' | head -n 1)"
+          test -n "$unsigned"
+          cp "$unsigned" dist/BazarBusiness-v3.8.5-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -P 16 -f 4 "$unsigned" dist/aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign \
+            --ks project/android/app/debug.keystore --ks-pass pass:android \
+            --ks-key-alias androiddebugkey --key-pass pass:android \
+            --out dist/BazarBusiness-v3.8.5-TEST-SIGNED.apk dist/aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs \
+            dist/BazarBusiness-v3.8.5-TEST-SIGNED.apk > dist/apk-signature-test.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging dist/BazarBusiness-v3.8.5-TEST-SIGNED.apk \
+            | grep -m1 '^package:' > dist/package.txt
+          grep -Eq "name='ir.picamo.bazar'.*versionCode='385'.*versionName='3.8.5'" dist/package.txt
+          sha256sum dist/BazarBusiness-v3.8.5-*.apk > dist/sha256sums.txt
+          echo 'TEST-SIGNED is not the production APK and MUST NOT be published to Cafe Bazaar.' > dist/README.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: bazar-business-v3.8.5-build
+          path: dist/
+          retention-days: 7
+      - name: Publish non-production build as a GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v3.8.5-build --repo "$GITHUB_REPOSITORY" \
+            --title 'Bazar Business 3.8.5 – unsigned/test build only' \
+            --notes 'CI validation build. Both APKs require original private release-key signing before publishing to Cafe Bazaar. No production signing keys are stored in this public repository.' \
+            --prerelease \
+            dist/BazarBusiness-v3.8.5-UNSIGNED.apk \
+            dist/BazarBusiness-v3.8.5-TEST-SIGNED.apk \
+            dist/apk-signature-test.txt \
+            dist/package.txt \
+            dist/sha256sums.txt
