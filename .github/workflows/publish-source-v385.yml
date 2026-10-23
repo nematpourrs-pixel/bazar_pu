@@ -37,7 +37,7 @@ jobs:
           git config user.name "Bazar Business CI"
           git config user.email "bazar-ci@users.noreply.github.com"
           git switch --orphan source/v3.8.5
-          git rm -rf . >/dev/null
+          git rm -rf --ignore-unmatch . >/dev/null || true
           mkdir -p app
           cp -a /tmp/public-android/. app/
           cat > README.md <<'EOT'
